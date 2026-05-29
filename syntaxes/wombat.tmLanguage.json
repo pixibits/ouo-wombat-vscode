@@ -1,0 +1,106 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Wombat",
+  "scopeName": "source.wombat",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#qnames"
+    },
+    {
+      "include": "#builtins"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.wombat",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.wombat",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.wombat",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.wombat",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.wombat",
+          "match": "\\b0[xX][0-9A-Fa-f]+\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.wombat",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.wombat",
+          "match": "\\b(if|else|while|for|switch|case|default|return|goto|break|continue)\\b"
+        },
+        {
+          "name": "keyword.declaration.wombat",
+          "match": "\\b(function|forward|member|trigger|inherits)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.wombat",
+          "match": "\\b(int|string|ustring|loc|obj|list|void)\\b"
+        }
+      ]
+    },
+    "qnames": {
+      "patterns": [
+        {
+          "name": "entity.name.variable.obfuscated.wombat",
+          "match": "\\bQ[0-9A-Z]{3}\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.function.wombat",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "name": "ouo-wombat-vscode",
+  "displayName": "OUO Wombat Script Tools",
+  "description": "Symbol index and editor support for UO Wombat scripts without rewriting source files.",
+  "version": "0.1.0",
+  "publisher": "pixibits",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pixibits/ouo-wombat-vscode.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:wombat",
+    "onCommand:wombat.generateSymbols",
+    "onCommand:wombat.reloadSymbols",
+    "onCommand:wombat.openSymbolReport",
+    "workspaceContains:**/scripts.wombat/*.m"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "wombat",
+        "aliases": [
+          "Wombat",
+          "wombat"
+        ],
+        "filenamePatterns": [
+          "**/scripts.wombat/*.m"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "wombat",
+        "scopeName": "source.wombat",
+        "path": "./syntaxes/wombat.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "wombat.generateSymbols",
+        "title": "Wombat: Generate Symbols"
+      },
+      {
+        "command": "wombat.reloadSymbols",
+        "title": "Wombat: Reload Symbols"
+      },
+      {
+        "command": "wombat.openSymbolReport",
+        "title": "Wombat: Open Symbol Report"
+      }
+    ],
+    "configuration": {
+      "title": "Wombat",
+      "properties": {
+        "wombat.scriptsPath": {
+          "type": "string",
+          "default": ".rundir/scripts.wombat",
+          "description": "Path to the decoded scripts.wombat directory."
+        },
+        "wombat.symbolsPath": {
+          "type": "string",
+          "default": "${extensionPath}/symbols/symbols.json",
+          "description": "Path to generated Wombat symbol metadata."
+        },
+        "wombat.overridesPath": {
+          "type": "string",
+          "default": "${extensionPath}/symbols/overrides.json",
+          "description": "Path to hand-maintained Wombat symbol display names and notes."
+        },
+        "wombat.autoDetectScriptsWombat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically switch .m files under scripts.wombat to the Wombat language mode."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "vitest run",
+    "generate:symbols": "tsx src/cli/generateSymbols.ts",
+    "vscode:prepublish": "npm run compile",
+    "package:vsix": "vsce package --out ouo-wombat-vscode-${npm_package_version}.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.9.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
