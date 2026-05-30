@@ -90,6 +90,9 @@
     "watch": "tsc -watch -p ./",
     "test": "vitest run",
     "generate:symbols": "tsx src/cli/generateSymbols.ts",
+    "codex:prepare-overrides": "tsx src/cli/codexPrepareOverrides.ts",
+    "codex:validate-overrides": "tsx src/cli/codexValidateOverrides.ts",
+    "codex:apply-packet": "tsx src/cli/codexApplyPacket.ts",
     "vscode:prepublish": "npm run compile",
     "package:vsix": "vsce package --out ouo-wombat-vscode-${npm_package_version}.vsix"
   },

@@ -7,7 +7,9 @@ src/**
 fixtures/**
 dist/cli/**
 dist/test/**
+dist/wombat/overridePackets.js
 dist/**/*.map
+symbols/codex-runs/**
 **/*.test.*
 *.vsix
 tsconfig.json
