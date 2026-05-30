@@ -21,6 +21,7 @@
     "onCommand:wombat.generateSymbols",
     "onCommand:wombat.reloadSymbols",
     "onCommand:wombat.openSymbolReport",
+    "onCommand:wombat.toggleOverrideNamesInEditor",
     "workspaceContains:**/scripts.wombat/*.m"
   ],
   "main": "./dist/extension.js",
@@ -57,6 +58,10 @@
       {
         "command": "wombat.openSymbolReport",
         "title": "Wombat: Open Symbol Report"
+      },
+      {
+        "command": "wombat.toggleOverrideNamesInEditor",
+        "title": "Wombat: Toggle Override Names In Editor"
       }
     ],
     "configuration": {

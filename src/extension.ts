@@ -11,9 +11,9 @@ import {
   findSymbolAt,
   formatHover,
   locationOf,
-  type IndexModel,
-  type SymbolEntity
+  type IndexModel
 } from "./vscode/model";
+import { OverrideNameOverlayController } from "./vscode/overrideOverlay";
 
 class SymbolStore {
   private model: IndexModel | undefined;
@@ -26,6 +26,7 @@ class SymbolStore {
     const symbolsPath = this.resolveConfiguredPath("symbolsPath");
     if (!fs.existsSync(symbolsPath)) {
       this.model = undefined;
+      this.changeEmitter.fire();
       return;
     }
     const parsed = JSON.parse(fs.readFileSync(symbolsPath, "utf8")) as SymbolIndex;
@@ -68,10 +69,12 @@ class SymbolStore {
 export function activate(context: vscode.ExtensionContext): void {
   const store = new SymbolStore(context);
   store.load();
+  const overlay = new OverrideNameOverlayController(context, store);
 
   const selector: vscode.DocumentSelector = [{ language: "wombat", scheme: "file" }];
 
   context.subscriptions.push(
+    overlay,
     vscode.languages.registerHoverProvider(selector, new WombatHoverProvider(store)),
     vscode.languages.registerCodeLensProvider(selector, new WombatCodeLensProvider(store)),
     vscode.languages.registerDefinitionProvider(selector, new WombatDefinitionProvider(store)),
@@ -81,7 +84,8 @@ export function activate(context: vscode.ExtensionContext): void {
       store.load();
       vscode.window.showInformationMessage("Wombat symbols reloaded.");
     }),
-    vscode.commands.registerCommand("wombat.openSymbolReport", async () => openSymbolReport(store))
+    vscode.commands.registerCommand("wombat.openSymbolReport", async () => openSymbolReport(store)),
+    vscode.commands.registerCommand("wombat.toggleOverrideNamesInEditor", async () => overlay.toggle())
   );
 
   if (vscode.workspace.getConfiguration("wombat").get<boolean>("autoDetectScriptsWombat", true)) {

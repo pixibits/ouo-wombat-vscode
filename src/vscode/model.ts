@@ -147,6 +147,17 @@ export function formatHover(lookup: SymbolLookup): string {
   return lines.join("\n");
 }
 
+export function presentationLabelForEntity(entity: SymbolEntity): string | undefined {
+  switch (entity.kind) {
+    case "reference":
+    case "trigger":
+      return undefined;
+  }
+
+  const label = entity.record.displayName ?? entity.record.name;
+  return label === entity.record.name ? undefined : label;
+}
+
 export function codeLensTitle(entity: SymbolEntity, model: IndexModel): string | undefined {
   if (entity.kind === "function-def") {
     const slot = model.byId.get(entity.record.slotId);

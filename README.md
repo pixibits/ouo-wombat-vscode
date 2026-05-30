@@ -6,6 +6,9 @@ The extension is intentionally read-only with respect to Wombat source. It
 shows readable names and inheritance metadata through editor providers while
 leaving `.m` files and compiled bytecode untouched.
 
+Use `Wombat: Toggle Override Names In Editor` or the `Wombat: Raw` / `Wombat: Display`
+status bar item to switch the editor overlay on and off.
+
 ## Generate Symbols
 
 ```sh
