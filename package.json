@@ -2,7 +2,7 @@
   "name": "ouo-wombat-vscode",
   "displayName": "OUO Wombat Script Tools",
   "description": "Symbol index and editor support for UO Wombat scripts without rewriting source files.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "pixibits",
   "license": "MIT",
   "repository": {
