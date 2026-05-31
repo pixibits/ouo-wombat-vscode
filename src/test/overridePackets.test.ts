@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   applyAcceptedPacket,
+  auditAcceptedPacket,
   buildCodexPackets,
   prepareCodexOverrideRun,
   selectOverrideCandidates,
@@ -14,7 +15,7 @@ import { generateSymbolsFromFiles } from "../wombat/symbols";
 import type { OverridesFile, SourceFile, SymbolIndex } from "../wombat/types";
 
 describe("Codex override packet workflow", () => {
-  it("selects Q function slots and members while skipping existing overrides", () => {
+  it("selects Q function slots, parameters, and locals while skipping existing overrides", () => {
     const fixture = createFixture();
     const candidates = selectOverrideCandidates(fixture.index, {
       schemaVersion: 1,
@@ -25,7 +26,11 @@ describe("Codex override packet workflow", () => {
       }
     });
 
-    expect(candidates.map((candidate) => candidate.symbolId)).toEqual(["function-slot:pet:Q4BY:iil"]);
+    expect(candidates.map((candidate) => `${candidate.kind}:${candidate.obfuscatedName}`)).toEqual([
+      "function-slot:Q4BY",
+      "param:Q618",
+      "local:Q4V9"
+    ]);
   });
 
   it("splits packets deterministically and includes compact source context", () => {
@@ -33,11 +38,12 @@ describe("Codex override packet workflow", () => {
     const candidates = selectOverrideCandidates(fixture.index, { schemaVersion: 1, symbols: {} });
     const packets = buildCodexPackets(fixture.index, candidates, {
       scriptsPath: fixture.scriptsPath,
-      maxSymbolsPerPacket: 1,
+      maxSymbolsPerPacket: 2,
       maxReferenceSnippets: 2
     });
 
     expect(packets.map((packet) => packet.packetId)).toEqual(["pet-001", "pet-002"]);
+    expect(packets[0].candidates.map((candidate) => candidate.kind)).toEqual(["function-slot", "member"]);
     expect(packets[0].candidates[0]).toMatchObject({
       symbolId: "function-slot:pet:Q4BY:iil",
       kind: "function-slot",
@@ -46,6 +52,19 @@ describe("Codex override packet workflow", () => {
     expect(packets[0].candidates[0].context.calledBuiltins).toContain("setObjVar");
     expect(packets[0].candidates[0].context.objVars).toContain("petMode");
     expect(packets[0].candidates[0].context.snippets[0].text).toContain("function int Q4BY");
+    expect(packets[1].candidates.map((candidate) => candidate.kind)).toEqual(["param", "local"]);
+    expect(packets[1].candidates[0]).toMatchObject({
+      kind: "param",
+      obfuscatedName: "Q618"
+    });
+    expect(packets[1].candidates[0].context.snippets[1]).toMatchObject({
+      label: "containing function function-def:pet:Q4BY:iil"
+    });
+    expect(packets[1].candidates[0].context.snippets[1].text).toContain("return(Q618)");
+    expect(packets[1].candidates[1]).toMatchObject({
+      kind: "local",
+      obfuscatedName: "Q4V9"
+    });
   });
 
   it("prepares a timestamped run with prompt, progress, and packets", () => {
@@ -56,16 +75,19 @@ describe("Codex override packet workflow", () => {
       overridesPath: paths.overridesPath,
       scriptsPath: fixture.scriptsPath,
       outDir: paths.runsPath,
-      maxSymbolsPerPacket: 1,
+      maxSymbolsPerPacket: 2,
       now: new Date(2026, 4, 29, 12, 34, 56)
     });
 
     expect(path.basename(result.runPath)).toBe("20260529-123456");
     expect(result.packetCount).toBe(2);
-    expect(fs.readFileSync(path.join(result.runPath, "PROMPT.md"), "utf8")).toContain("Do not edit any .m Wombat source files");
+    const prompt = fs.readFileSync(path.join(result.runPath, "PROMPT.md"), "utf8");
+    expect(prompt).toContain("Do not edit any .m Wombat source files");
+    expect(prompt).toContain("Before every packet, re-read this PROMPT.md, progress.json");
+    expect(prompt).toContain("Do not use, copy, merge, or summarize accepted files from older runs");
     expect(JSON.parse(fs.readFileSync(path.join(result.runPath, "progress.json"), "utf8"))).toMatchObject({
       packetCount: 2,
-      candidateCount: 2
+      candidateCount: 4
     });
   });
 
@@ -77,7 +99,7 @@ describe("Codex override packet workflow", () => {
       overridesPath: paths.overridesPath,
       scriptsPath: fixture.scriptsPath,
       outDir: paths.runsPath,
-      maxSymbolsPerPacket: 1,
+      maxSymbolsPerPacket: 2,
       now: new Date(2026, 4, 29, 12, 34, 56)
     });
 
@@ -139,7 +161,7 @@ describe("Codex override packet workflow", () => {
       scriptsPath: fixture.scriptsPath,
       outDir: paths.runsPath,
       includeExisting: true,
-      maxSymbolsPerPacket: 1
+      maxSymbolsPerPacket: 2
     });
 
     writeAccepted(result.runPath, "pet-001", {
@@ -169,8 +191,59 @@ describe("Codex override packet workflow", () => {
     expect(() => applyAcceptedPacket({ runPath: result.runPath, packetId: "pet-001" })).toThrow(/existing override would be replaced/);
   });
 
+  it("audits and blocks broad duplicate accepted names", () => {
+    const fixture = createFixture();
+    const paths = writeRunInputs(fixture.index, { schemaVersion: 1, symbols: {} });
+    const result = prepareCodexOverrideRun({
+      symbolsPath: paths.symbolsPath,
+      overridesPath: paths.overridesPath,
+      scriptsPath: fixture.scriptsPath,
+      outDir: paths.runsPath,
+      maxSymbolsPerPacket: 2
+    });
+    const paramId = fixture.index.params.find((record) => record.name === "Q618")?.id;
+    const localId = fixture.index.locals.find((record) => record.name === "Q4V9")?.id;
+    expect(paramId).toBeDefined();
+    expect(localId).toBeDefined();
+    const packet = JSON.parse(fs.readFileSync(path.join(result.runPath, "packets", "pet-002.json"), "utf8"));
+    const accepted: AcceptedOverrideFile = {
+      schemaVersion: 1,
+      packetId: "pet-002",
+      overrides: [
+        {
+          symbolId: paramId!,
+          displayName: "count",
+          confidence: 0.92
+        },
+        {
+          symbolId: localId!,
+          displayName: "count",
+          confidence: 0.92
+        }
+      ]
+    };
+
+    const auditMessages = auditAcceptedPacket(packet, accepted).map((issue) => issue.message);
+    expect(auditMessages).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("broad accepted name 'count'"),
+        expect.stringContaining("2 accepted overrides use 'count'")
+      ])
+    );
+
+    writeAccepted(result.runPath, "pet-002", accepted);
+    expect(() => applyAcceptedPacket({ runPath: result.runPath, packetId: "pet-002" })).toThrow(/accepted override audit/);
+    expect(() =>
+      applyAcceptedPacket({ runPath: result.runPath, packetId: "pet-002", allowAuditWarnings: true })
+    ).not.toThrow();
+  });
+
   it("validates full overrides against the active symbol index", () => {
     const fixture = createFixture();
+    const paramId = fixture.index.params.find((record) => record.name === "Q618")?.id;
+    const localId = fixture.index.locals.find((record) => record.name === "Q4V9")?.id;
+    expect(paramId).toBeDefined();
+    expect(localId).toBeDefined();
     const issues = validateOverridesFile(fixture.index, {
       schemaVersion: 1,
       symbols: {
@@ -179,6 +252,12 @@ describe("Codex override packet workflow", () => {
         },
         "member:pet:Q5F6": {
           displayName: "activePet"
+        },
+        [paramId!]: {
+          displayName: "petCommandInput"
+        },
+        [localId!]: {
+          displayName: "commandCounter"
         },
         "member:pet:Q999": {
           displayName: "missingMember"
@@ -204,7 +283,9 @@ function createFixture(): { index: SymbolIndex; scriptsPath: string } {
 member obj Q5F6;
 
 function int Q4BY(int Q618, list text) {
+  int Q4V9;
   string phrase;
+  Q4V9 = Q618 + 0x01;
   phrase = "pet follow";
   setObjVar(this, "petMode", phrase);
   Q5F6 = this;

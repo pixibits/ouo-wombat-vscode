@@ -1,10 +1,8 @@
-import { applyAcceptedPacket } from "../wombat/overridePackets";
+import { auditAcceptedRun } from "../wombat/overridePackets";
 
 interface CliArgs {
   run: string;
   packet?: string;
-  force: boolean;
-  allowAuditWarnings: boolean;
   help: boolean;
 }
 
@@ -14,31 +12,30 @@ function main(argv: string[]): number {
     printHelp();
     return 0;
   }
-  if (!args.packet) {
-    throw new Error("missing required --packet <packet-id>");
-  }
 
-  const result = applyAcceptedPacket({
+  const result = auditAcceptedRun({
     runPath: args.run,
-    packetId: args.packet,
-    force: args.force,
-    allowAuditWarnings: args.allowAuditWarnings
+    packetId: args.packet
   });
 
-  console.log(`applied ${result.packetId}: ${result.acceptedCount} overrides`);
-  console.log(`overrides=${result.overridesPath}`);
-  if (result.backupPath) {
-    console.log(`backup=${result.backupPath}`);
+  for (const issue of result.issues) {
+    console.error(`${issue.severity}: ${issue.message}`);
   }
-  console.log(`report=${result.reportPath}`);
+
+  if (result.issues.length > 0) {
+    console.error(
+      `accepted override audit needs review: ${result.issues.length} issue(s), ${result.acceptedPacketCount}/${result.packetCount} accepted packet(s)`
+    );
+    return 1;
+  }
+
+  console.log(`accepted override audit passed: ${result.acceptedPacketCount}/${result.packetCount} packet(s)`);
   return 0;
 }
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     run: "symbols/codex-runs/latest",
-    force: false,
-    allowAuditWarnings: false,
     help: false
   };
 
@@ -50,10 +47,6 @@ function parseArgs(argv: string[]): CliArgs {
       args.run = requireValue(argv, ++i, arg);
     } else if (arg === "--packet") {
       args.packet = requireValue(argv, ++i, arg).replace(/\.json$/i, "");
-    } else if (arg === "--force") {
-      args.force = true;
-    } else if (arg === "--allow-audit-warnings") {
-      args.allowAuditWarnings = true;
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
@@ -71,13 +64,11 @@ function requireValue(argv: string[], index: number, flag: string): string {
 }
 
 function printHelp(): void {
-  console.log(`Usage: npm run codex:apply-packet -- --packet <packet-id> [options]
+  console.log(`Usage: npm run codex:audit-accepted -- [options]
 
 Options:
-  --packet <packet-id>   packet id to apply
   --run <dir>            codex run directory, default symbols/codex-runs/latest
-  --force                allow replacing existing overrides
-  --allow-audit-warnings apply after manually reviewing accepted-name audit warnings
+  --packet <packet-id>   audit one accepted packet
   -h, --help             show this help
 `);
 }

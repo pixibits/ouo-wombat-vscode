@@ -96,6 +96,7 @@
     "test": "vitest run",
     "generate:symbols": "tsx src/cli/generateSymbols.ts",
     "codex:prepare-overrides": "tsx src/cli/codexPrepareOverrides.ts",
+    "codex:audit-accepted": "tsx src/cli/codexAuditAccepted.ts",
     "codex:validate-overrides": "tsx src/cli/codexValidateOverrides.ts",
     "codex:apply-packet": "tsx src/cli/codexApplyPacket.ts",
     "vscode:prepublish": "npm run compile",

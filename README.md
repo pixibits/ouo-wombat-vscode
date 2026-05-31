@@ -27,6 +27,8 @@ Prepare local work packets:
 npm run codex:prepare-overrides
 ```
 
+This batches Q-name function slots, members, parameters, and locals into Codex packets.
+
 Then reopen Codex with the model you want and prompt it with:
 
 ```text
@@ -35,10 +37,14 @@ Read symbols/codex-runs/latest/PROMPT.md and process all packets.
 
 Codex writes accepted packet results under the ignored `symbols/codex-runs/`
 folder and merges only validated names into `symbols/overrides.json`.
+Accepted packets are audited before they can be applied. The audit flags broad
+fallback names, repeated names in the same scope, and other low-confidence
+patterns that usually need a human pass.
 
 Useful checks:
 
 ```sh
+npm run codex:audit-accepted -- --packet <packet-id>
 npm run codex:validate-overrides
 npm run generate:symbols -- --scripts ../.rundir/scripts.wombat --out symbols/symbols.json --overrides symbols/overrides.json
 ```

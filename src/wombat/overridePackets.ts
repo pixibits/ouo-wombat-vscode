@@ -6,19 +6,22 @@ import {
   type FunctionForwardRecord,
   type FunctionParameterShape,
   type FunctionSlotRecord,
+  type LocalRecord,
   type MemberRecord,
+  type ParameterRecord,
   type OverridesFile,
   type ReferenceRecord,
   type SourceLocation,
   type SourceRange,
   type SymbolIndex,
+  type TriggerRecord,
   type SymbolOverride
 } from "./types";
 
 export const CODEX_RUN_SCHEMA_VERSION = 1;
 export const Q_NAME_PATTERN = /^Q[0-9A-Z]{3}$/;
 
-export type OverrideCandidateKind = "function-slot" | "member";
+export type OverrideCandidateKind = "function-slot" | "member" | "param" | "local";
 export type ProgressStatus = "pending" | "applied";
 
 export interface SelectOverrideCandidatesOptions {
@@ -190,6 +193,7 @@ export interface ApplyPacketOptions {
   runPath: string;
   packetId: string;
   force?: boolean;
+  allowAuditWarnings?: boolean;
   now?: Date;
 }
 
@@ -205,6 +209,18 @@ export interface OverrideValidationIssue {
   severity: "error" | "warning";
   message: string;
   symbolId?: string;
+}
+
+export interface AuditAcceptedRunOptions {
+  runPath: string;
+  packetId?: string;
+}
+
+export interface AuditAcceptedRunResult {
+  runPath: string;
+  packetCount: number;
+  acceptedPacketCount: number;
+  issues: OverrideValidationIssue[];
 }
 
 const DEFAULT_MAX_SYMBOLS_PER_PACKET = 25;
@@ -239,6 +255,24 @@ const wombatReservedWords = new Set([
 ]);
 
 const genericNames = new Set(["data", "doThing", "execute", "helper", "process", "run", "thing", "unknown", "value"]);
+const broadAcceptedNames = new Set([
+  "amount",
+  "count",
+  "createdObject",
+  "index",
+  "items",
+  "locationLocation",
+  "locationValue",
+  "lookAtTextText",
+  "messageValue",
+  "object",
+  "objectObject",
+  "objectValue",
+  "randomValue",
+  "result",
+  "text",
+  "value"
+]);
 
 const callWordsToIgnore = new Set([
   ...wombatReservedWords,
@@ -282,12 +316,38 @@ export function selectOverrideCandidates(
     });
   }
 
+  for (const param of index.params) {
+    if (!Q_NAME_PATTERN.test(param.name ?? "") || (!includeExisting && hasOverride(param.id))) {
+      continue;
+    }
+    candidates.push({
+      symbolId: param.id,
+      kind: "param",
+      obfuscatedName: param.name,
+      script: param.script,
+      existingOverride: overrides.symbols[param.id]
+    });
+  }
+
+  for (const local of index.locals) {
+    if (!Q_NAME_PATTERN.test(local.name) || (!includeExisting && hasOverride(local.id))) {
+      continue;
+    }
+    candidates.push({
+      symbolId: local.id,
+      kind: "local",
+      obfuscatedName: local.name,
+      script: local.script,
+      existingOverride: overrides.symbols[local.id]
+    });
+  }
+
   return candidates.sort((a, b) => {
     const scriptCmp = a.script.localeCompare(b.script);
     if (scriptCmp !== 0) {
       return scriptCmp;
     }
-    const kindCmp = a.kind.localeCompare(b.kind);
+    const kindCmp = candidateKindRank(a.kind) - candidateKindRank(b.kind);
     if (kindCmp !== 0) {
       return kindCmp;
     }
@@ -428,10 +488,22 @@ export function applyAcceptedPacket(options: ApplyPacketOptions): ApplyPacketRes
     ? readJsonFile<OverridesFile>(overridesPath)
     : ({ schemaVersion: CODEX_RUN_SCHEMA_VERSION, symbols: {} } satisfies OverridesFile);
 
-  const issues = validateAcceptedPacket(packet, accepted, overrides, { force: options.force });
-  const errors = issues.filter((issue) => issue.severity === "error");
+  const validationIssues = validateAcceptedPacket(packet, accepted, overrides, { force: options.force });
+  const errors = validationIssues.filter((issue) => issue.severity === "error");
   if (errors.length > 0) {
     throw new Error(errors.map(formatIssue).join("\n"));
+  }
+
+  const auditIssues = auditAcceptedPacket(packet, accepted);
+  const auditBlockers = auditIssues.filter((issue) => issue.severity === "error" || options.allowAuditWarnings !== true);
+  if (auditBlockers.length > 0) {
+    throw new Error(
+      [
+        "accepted override audit found names that need manual review",
+        ...auditBlockers.map(formatIssue),
+        "rerun with --allow-audit-warnings only after reviewing these names"
+      ].join("\n")
+    );
   }
 
   let backupPath = progress.backupPath ? path.join(runPath, progress.backupPath) : undefined;
@@ -467,7 +539,7 @@ export function applyAcceptedPacket(options: ApplyPacketOptions): ApplyPacketRes
 
   const reportPath = path.join(runPath, packetProgress.reportPath);
   fs.mkdirSync(path.dirname(reportPath), { recursive: true });
-  fs.writeFileSync(reportPath, renderApplyReport(packet, accepted, issues, appliedAt), "utf8");
+  fs.writeFileSync(reportPath, renderApplyReport(packet, accepted, [...validationIssues, ...auditIssues], appliedAt), "utf8");
 
   return {
     packetId: packet.packetId,
@@ -542,6 +614,113 @@ export function validateAcceptedPacket(
         message: `${prefix}notes are required for low-confidence or ambiguous guesses`
       });
     }
+  }
+
+  return issues;
+}
+
+export function auditAcceptedRun(options: AuditAcceptedRunOptions): AuditAcceptedRunResult {
+  const runPath = resolveRunPath(options.runPath);
+  const progress = readJsonFile<CodexProgressFile>(path.join(runPath, "progress.json"));
+  const packetId = options.packetId?.replace(/\.json$/i, "");
+  const selectedPackets = packetId ? progress.packets.filter((packet) => packet.packetId === packetId) : progress.packets;
+  const issues: OverrideValidationIssue[] = [];
+  let acceptedPacketCount = 0;
+
+  if (packetId && selectedPackets.length === 0) {
+    return {
+      runPath,
+      packetCount: 0,
+      acceptedPacketCount: 0,
+      issues: [
+        {
+          severity: "error",
+          message: `packet not found in progress.json: ${packetId}`
+        }
+      ]
+    };
+  }
+
+  for (const packetProgress of selectedPackets) {
+    const acceptedPath = path.join(runPath, packetProgress.acceptedPath);
+    if (!fs.existsSync(acceptedPath)) {
+      if (packetId) {
+        issues.push({
+          severity: "error",
+          message: `accepted packet file not found: ${acceptedPath}`
+        });
+      }
+      continue;
+    }
+
+    acceptedPacketCount++;
+    const packet = readJsonFile<CodexPacket>(path.join(runPath, packetProgress.path));
+    const accepted = readJsonFile<AcceptedOverrideFile>(acceptedPath);
+    issues.push(...auditAcceptedPacket(packet, accepted));
+  }
+
+  return {
+    runPath,
+    packetCount: selectedPackets.length,
+    acceptedPacketCount,
+    issues
+  };
+}
+
+export function auditAcceptedPacket(packet: CodexPacket, accepted: AcceptedOverrideFile): OverrideValidationIssue[] {
+  const issues: OverrideValidationIssue[] = [];
+  const candidatesById = new Map(packet.candidates.map((candidate) => [candidate.symbolId, candidate]));
+  const acceptedByScopeAndName = new Map<string, AcceptedOverride[]>();
+
+  for (const override of accepted.overrides) {
+    const candidate = candidatesById.get(override.symbolId);
+    const prefix = `${packet.packetId}: ${override.symbolId}: `;
+
+    if (!candidate) {
+      continue;
+    }
+
+    if ((override.confidence ?? 1) <= 0.7) {
+      issues.push({
+        severity: "warning",
+        symbolId: override.symbolId,
+        message: `${prefix}low-confidence accepted name '${override.displayName}' should be manually reviewed`
+      });
+    }
+    if (/fallback name/i.test(override.notes ?? "")) {
+      issues.push({
+        severity: "warning",
+        symbolId: override.symbolId,
+        message: `${prefix}fallback accepted name '${override.displayName}' should be omitted or replaced with a context-specific role`
+      });
+    }
+    if (isBroadAcceptedName(override.displayName, candidate, override.confidence)) {
+      issues.push({
+        severity: "warning",
+        symbolId: override.symbolId,
+        message: `${prefix}broad accepted name '${override.displayName}' may hide more than it explains`
+      });
+    }
+
+    const scopeKey = `${candidateScopeKey(candidate)}\u0000${override.displayName}`;
+    const group = acceptedByScopeAndName.get(scopeKey);
+    if (group) {
+      group.push(override);
+    } else {
+      acceptedByScopeAndName.set(scopeKey, [override]);
+    }
+  }
+
+  for (const [scopeKey, overrides] of acceptedByScopeAndName) {
+    if (overrides.length < 2) {
+      continue;
+    }
+    const [scope, displayName] = scopeKey.split("\u0000");
+    issues.push({
+      severity: "warning",
+      symbolId: overrides[0].symbolId,
+      message: `${packet.packetId}: ${scope}: ${overrides.length} accepted overrides use '${displayName}'; prefer distinct role names or omit ambiguous locals`
+    });
   }
 
   return issues;
@@ -624,8 +803,10 @@ function createPacket(packetId: string, candidates: OverrideCandidate[], context
     script: scripts.length === 1 ? scripts[0] : scripts.join(","),
     scripts,
     instructions: [
-      "Infer human-readable lowerCamelCase display names for the listed Wombat Qxxx symbols.",
+      "Infer human-readable lowerCamelCase display names for the listed Wombat Qxxx symbols, including function slots, members, parameters, and locals.",
       "Only include symbols when the proposed name is supported by the packet context.",
+      "Omit candidates whose role is ambiguous; a shorter accepted file is better than generic filler names.",
+      "Do not write scripts, helper tools, or bulk heuristics to generate names. Review this packet directly.",
       "Use notes for uncertainty, ambiguity, or any name that is more of an informed guess.",
       "Do not edit Wombat .m source files or compiled script files."
     ],
@@ -649,8 +830,11 @@ function createPacket(packetId: string, candidates: OverrideCandidate[], context
 class PacketContextBuilder {
   private readonly slotsById: Map<string, FunctionSlotRecord>;
   private readonly membersById: Map<string, MemberRecord>;
+  private readonly paramsById: Map<string, ParameterRecord>;
+  private readonly localsById: Map<string, LocalRecord>;
   private readonly functionsById: Map<string, FunctionDefinitionRecord>;
   private readonly forwardsById: Map<string, FunctionForwardRecord>;
+  private readonly triggersById: Map<string, TriggerRecord>;
   private readonly referencesByTargetId: Map<string, ReferenceRecord[]>;
   private readonly sourceCache: SourceCache;
   private readonly maxReferenceSnippets: number;
@@ -662,8 +846,11 @@ class PacketContextBuilder {
   ) {
     this.slotsById = new Map(index.functionSlots.map((record) => [record.id, record]));
     this.membersById = new Map(index.members.map((record) => [record.id, record]));
+    this.paramsById = new Map(index.params.map((record) => [record.id, record]));
+    this.localsById = new Map(index.locals.map((record) => [record.id, record]));
     this.functionsById = new Map(index.functions.map((record) => [record.id, record]));
     this.forwardsById = new Map(index.forwards.map((record) => [record.id, record]));
+    this.triggersById = new Map(index.triggers.map((record) => [record.id, record]));
     this.referencesByTargetId = buildReferencesByTargetId(index.references);
     this.sourceCache = new SourceCache(options.scriptsPath);
     this.maxReferenceSnippets = options.maxReferenceSnippets ?? DEFAULT_MAX_REFERENCE_SNIPPETS;
@@ -671,10 +858,17 @@ class PacketContextBuilder {
   }
 
   buildCandidate(candidate: OverrideCandidate): CodexPacketCandidate {
-    if (candidate.kind === "function-slot") {
-      return this.buildFunctionCandidate(candidate);
+    switch (candidate.kind) {
+      case "function-slot":
+        return this.buildFunctionCandidate(candidate);
+      case "member":
+        return this.buildMemberCandidate(candidate);
+      case "param":
+        return this.buildParamCandidate(candidate);
+      case "local":
+        return this.buildLocalCandidate(candidate);
     }
-    return this.buildMemberCandidate(candidate);
+    throw new Error(`unsupported override candidate kind: ${candidate.kind}`);
   }
 
   private buildFunctionCandidate(candidate: OverrideCandidate): CodexPacketCandidate {
@@ -770,6 +964,74 @@ class PacketContextBuilder {
         calledBuiltins: hints.calledBuiltins
       }
     };
+  }
+
+  private buildParamCandidate(candidate: OverrideCandidate): CodexPacketCandidate {
+    const param = required(this.paramsById.get(candidate.symbolId), `missing param ${candidate.symbolId}`);
+    return this.buildVariableCandidate(candidate, param, "param");
+  }
+
+  private buildLocalCandidate(candidate: OverrideCandidate): CodexPacketCandidate {
+    const local = required(this.localsById.get(candidate.symbolId), `missing local ${candidate.symbolId}`);
+    return this.buildVariableCandidate(candidate, local, "local");
+  }
+
+  private buildVariableCandidate(
+    candidate: OverrideCandidate,
+    variable: ParameterRecord | LocalRecord,
+    kind: "param" | "local"
+  ): CodexPacketCandidate {
+    const noun = kind === "param" ? "parameter" : "local variable";
+    const references = this.referencesByTargetId.get(variable.id) ?? [];
+    const snippets = [
+      this.snippetForRange(`${noun} ${variable.id}`, variable.location, variable.location, 2, 6),
+      ...optionalSnippet(this.containerSnippet(variable.containerId)),
+      ...this.referenceSnippets(references)
+    ];
+    const hints = collectContextHints(snippets.map((snippet) => snippet.raw), variable.name);
+
+    return {
+      symbolId: variable.id,
+      kind,
+      obfuscatedName: variable.name,
+      script: variable.script,
+      type: `${variable.type} ${noun}`,
+      existingOverride: candidate.existingOverride,
+      context: {
+        declarations: [contextLocation("definition", variable.id, variable.location)],
+        references: references.slice(0, this.maxReferenceSnippets).map(referenceSummary),
+        snippets: snippets.map(stripRawSnippet),
+        strings: hints.strings,
+        objVars: hints.objVars,
+        calledBuiltins: hints.calledBuiltins
+      }
+    };
+  }
+
+  private containerSnippet(containerId: string): SourceSnippetWithRaw | undefined {
+    const definition = this.functionsById.get(containerId);
+    if (definition) {
+      return this.snippetForRange(
+        `containing function ${definition.id}`,
+        definition.location,
+        definition.bodyRange ? mergeLocationAndRange(definition.location, definition.bodyRange) : definition.location,
+        1,
+        this.maxDeclarationLines
+      );
+    }
+
+    const trigger = this.triggersById.get(containerId);
+    if (trigger) {
+      return this.snippetForRange(
+        `containing trigger ${trigger.id}`,
+        trigger.location,
+        trigger.bodyRange ? mergeLocationAndRange(trigger.location, trigger.bodyRange) : trigger.location,
+        1,
+        this.maxDeclarationLines
+      );
+    }
+
+    return undefined;
   }
 
   private referenceSnippets(references: ReferenceRecord[]): SourceSnippetWithRaw[] {
@@ -948,6 +1210,27 @@ function validateDisplayName(displayName: unknown, symbolId: string): OverrideVa
   return issues;
 }
 
+function isBroadAcceptedName(displayName: string, candidate: CodexPacketCandidate, confidence: number | undefined): boolean {
+  if (broadAcceptedNames.has(displayName)) {
+    return true;
+  }
+  if (candidate.kind !== "param" && candidate.kind !== "local") {
+    return false;
+  }
+  if ((confidence ?? 1) > 0.78) {
+    return false;
+  }
+  return /(?:Result|Object|Value|Text|Items|Count|Location)$/.test(displayName);
+}
+
+function candidateScopeKey(candidate: CodexPacketCandidate): string {
+  const match = /^(?:local|param):([^:]+):([^:]+):/.exec(candidate.symbolId);
+  if (match) {
+    return `${match[1]}:${match[2]}`;
+  }
+  return candidate.script;
+}
+
 function needsNotes(override: AcceptedOverride): boolean {
   if (override.confidence !== undefined && override.confidence < 0.7) {
     return true;
@@ -958,7 +1241,7 @@ function needsNotes(override: AcceptedOverride): boolean {
 function renderPrompt(progress: CodexProgressFile): string {
   return `# Codex-Assisted Wombat Override Naming
 
-You are populating display-name metadata for Wombat Qxxx symbols. Work locally in this repository. Do not edit any .m Wombat source files, compiled bytecode, or generated symbols.json by hand.
+You are populating display-name metadata for Wombat Qxxx symbols, including function slots, members, parameters, and locals. Work locally in this repository. Do not edit any .m Wombat source files, compiled bytecode, or generated symbols.json by hand.
 
 ## Run
 - Run ID: ${progress.runId}
@@ -970,10 +1253,17 @@ You are populating display-name metadata for Wombat Qxxx symbols. Work locally i
 
 Packet, accepted, report, and progress paths are relative to the directory containing this PROMPT.md file.
 
+## Guardrails
+- Before every packet, re-read this PROMPT.md, progress.json, and the active packets/*.json file.
+- Do not use, copy, merge, or summarize accepted files from older runs or other run IDs.
+- Do not create helper scripts, regex pipelines, bulk heuristics, or automated naming tools for the packets.
+- If a candidate is ambiguous, omit it. A smaller high-confidence accepted file is better than filler.
+- After writing each accepted file, run \`npm run codex:audit-accepted -- --packet <packet-id>\` and apply it only if the audit passes.
+
 ## Workflow
-1. Open progress.json and pick the first packet whose status is "pending".
-2. Read that packet from its packets/*.json file.
-3. Infer lowerCamelCase displayName values for Qxxx function slots and members using only the packet context.
+1. Re-open progress.json and pick the first packet whose status is "pending".
+2. Re-read that packet from its packets/*.json file.
+3. Infer lowerCamelCase displayName values for Qxxx function slots, members, parameters, and locals using only the packet context.
 4. Write accepted/<packet-id>.json with this schema:
 
 \`\`\`json
@@ -992,14 +1282,19 @@ Packet, accepted, report, and progress paths are relative to the directory conta
 }
 \`\`\`
 
-5. Run \`npm run codex:apply-packet -- --packet <packet-id>\`.
-6. Run \`npm run codex:validate-overrides\`.
-7. Continue until all packets are applied.
+The overrides array may be shorter than the candidate list. Omit any candidate whose role is unclear.
+
+5. Run \`npm run codex:audit-accepted -- --packet <packet-id>\`.
+6. If the audit passes, run \`npm run codex:apply-packet -- --packet <packet-id>\`.
+7. Run \`npm run codex:validate-overrides\`.
+8. Continue until all packets are applied.
 
 ## Naming Rules
 - Only use symbolId values from the active packet.
 - displayName must be lowerCamelCase.
 - Do not use Qxxx names, Wombat keywords/types, empty names, or generic names like helper/process/run/value.
+- Avoid broad bucket names like count/result/index/object/value unless that is truly the symbol's specific role and notes explain why.
+- Avoid scriptStemResult/scriptStemObject/scriptStemValue names. These are usually signs that the context was not understood.
 - Preserve existing overrides unless the user explicitly asks for --force.
 - Add notes when a name is uncertain, low-confidence, or based on partial context.
 
@@ -1211,6 +1506,10 @@ function required<T>(value: T | undefined, message: string): T {
   return value;
 }
 
+function optionalSnippet(value: SourceSnippetWithRaw | undefined): SourceSnippetWithRaw[] {
+  return value ? [value] : [];
+}
+
 function pushUnique(values: string[], value: string): void {
   if (!values.includes(value)) {
     values.push(value);
@@ -1219,4 +1518,17 @@ function pushUnique(values: string[], value: string): void {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+}
+
+function candidateKindRank(kind: OverrideCandidateKind): number {
+  switch (kind) {
+    case "function-slot":
+      return 0;
+    case "member":
+      return 1;
+    case "param":
+      return 2;
+    case "local":
+      return 3;
+  }
 }
